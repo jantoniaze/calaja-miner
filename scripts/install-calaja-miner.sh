@@ -124,12 +124,18 @@ install_packages() {
     apt-get update
     apt-get install -y \
         ca-certificates \
+        build-essential \
+        cmake \
         curl \
         dmidecode \
         git \
         iproute2 \
+        libhwloc-dev \
+        libssl-dev \
+        libuv1-dev \
         lm-sensors \
         openssh-server \
+        pkg-config \
         python3 \
         python3-pip \
         python3-venv \
@@ -206,6 +212,37 @@ setup_agent_venv() {
     python3 -m venv "$INSTALL_DIR/agent/venv"
     "$INSTALL_DIR/agent/venv/bin/pip" install --upgrade pip
     "$INSTALL_DIR/agent/venv/bin/pip" install -r "$INSTALL_DIR/agent/requirements.txt"
+}
+
+build_xmrig_if_needed() {
+    local xmrig_bin source_dir build_dir
+    xmrig_bin="$INSTALL_DIR/xmrig/build/xmrig"
+    source_dir="$INSTALL_DIR/xmrig"
+    build_dir="$source_dir/build"
+
+    if [ -x "$xmrig_bin" ]; then
+        log "XMRig ja existe: $xmrig_bin"
+        return
+    fi
+
+    log "Binario do XMRig nao encontrado. Compilando localmente..."
+
+    if [ ! -f "$source_dir/CMakeLists.txt" ]; then
+        echo "Fonte do XMRig nao encontrada em $source_dir" >&2
+        exit 1
+    fi
+
+    rm -rf "$build_dir"
+    mkdir -p "$build_dir"
+
+    cmake -S "$source_dir" -B "$build_dir" \
+        -DWITH_HWLOC=ON \
+        -DWITH_TLS=ON \
+        -DWITH_OPENCL=OFF \
+        -DWITH_CUDA=OFF
+
+    cmake --build "$build_dir" --parallel "$(nproc)"
+    chmod +x "$xmrig_bin"
 }
 
 write_configs() {
@@ -374,6 +411,7 @@ main() {
     remove_old_services
     install_files
     setup_agent_venv
+    build_xmrig_if_needed
     write_configs
     install_services
     tune_system
