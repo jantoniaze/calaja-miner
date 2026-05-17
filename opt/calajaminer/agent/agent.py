@@ -221,6 +221,57 @@ def get_xmrig_api(cfg):
         return {}
 
 
+def get_xmrig_backends(cfg):
+    try:
+        url = cfg["xmrig_api"].replace("/2/summary", "/2/backends")
+        r = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {cfg['xmrig_token']}"},
+            timeout=3
+        )
+        return r.json()
+    except Exception:
+        return []
+
+
+def fmt_hashrate(value):
+    if isinstance(value, list):
+        vals = [v for v in value if v is not None]
+        if vals:
+            return round(float(vals[0]), 2)
+        return 0
+    if value is None:
+        return 0
+    try:
+        return round(float(value), 2)
+    except Exception:
+        return 0
+
+
+def build_miner_threads(backends, temp):
+    if not isinstance(backends, list):
+        return []
+
+    for backend in backends:
+        if backend.get("type") != "cpu":
+            continue
+
+        rows = []
+
+        for index, thread in enumerate(backend.get("threads") or [], start=1):
+            rows.append({
+                "index": index,
+                "affinity": thread.get("affinity"),
+                "intensity": thread.get("intensity"),
+                "hashrate": fmt_hashrate(thread.get("hashrate")),
+                "temp": temp
+            })
+
+        return rows
+
+    return []
+
+
 def get_ping(pool):
     try:
         if not pool:
@@ -235,10 +286,11 @@ def get_ping(pool):
     return None
 
 
-def build_payload(agent_cfg, xmrig):
+def build_payload(agent_cfg, xmrig, backends=None):
     ip = get_ip()
     memory = get_memory_info()
     board = get_board_info()
+    temp = get_temp()
 
     try:
         xmrig_cfg = load_xmrig_config()
@@ -274,8 +326,9 @@ def build_payload(agent_cfg, xmrig):
         "ram_slots": memory.get("ram_slots"),
         "ram": psutil.virtual_memory().percent,
         "disk": psutil.disk_usage("/").percent,
-        "temp": get_temp(),
+        "temp": temp,
         "threads": threads,
+        "miner_threads": build_miner_threads(backends or [], temp),
         "load": get_load(),
         "ping": get_ping(pool),
         "miner_status": get_miner_status(),
@@ -288,7 +341,8 @@ def send_loop():
         try:
             cfg = load_agent_config()
             xmrig = get_xmrig_api(cfg)
-            payload = build_payload(cfg, xmrig)
+            backends = get_xmrig_backends(cfg)
+            payload = build_payload(cfg, xmrig, backends)
 
             requests.post(cfg["central_url"], json=payload, timeout=5)
             print("ENVIADO:", payload)
@@ -358,7 +412,8 @@ def health():
 def local_status():
     cfg = load_agent_config()
     xmrig = get_xmrig_api(cfg)
-    return jsonify(build_payload(cfg, xmrig))
+    backends = get_xmrig_backends(cfg)
+    return jsonify(build_payload(cfg, xmrig, backends))
 
 
 @app.route("/api/local/config", methods=["GET"])
