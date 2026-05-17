@@ -1,0 +1,15 @@
+[Unit]
+Description=Calaja Miner Agent API
+After=network-online.target xmrig.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/calajaminer/agent
+ExecStart=/opt/calajaminer/agent/venv/bin/python /opt/calajaminer/agent/agent.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

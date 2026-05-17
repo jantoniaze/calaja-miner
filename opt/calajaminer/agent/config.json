@@ -1,0 +1,9 @@
+{
+    "rig_id": "calaja-rig-17",
+    "location": "home",
+    "worker": "rig17",
+    "central_url": "http://192.168.3.3:5001/api/status",
+    "xmrig_api": "http://127.0.0.1:16000/2/summary",
+    "xmrig_token": "calaja",
+    "interval": 3
+}

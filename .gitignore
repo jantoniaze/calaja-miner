@@ -1,0 +1,17 @@
+# Runtime/local state
+logs/
+*.log
+.env
+.env.*
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Editors/OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+

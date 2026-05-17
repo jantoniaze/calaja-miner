@@ -1,0 +1,15 @@
+[Unit]
+Description=XMRig Miner - CalajaMinerOS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/calajaminer
+ExecStart=/opt/calajaminer/xmrig/build/xmrig -c /opt/calajaminer/config.json
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

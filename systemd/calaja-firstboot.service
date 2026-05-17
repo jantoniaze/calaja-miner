@@ -1,0 +1,12 @@
+[Unit]
+Description=CalajaMinerOS First Boot Setup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/calajaminer/scripts/calaja-firstboot.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
