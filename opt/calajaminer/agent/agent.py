@@ -12,6 +12,7 @@ CONFIG_PATH = "/opt/calajaminer/agent/config.json"
 XMRIG_CONFIG = "/opt/calajaminer/config.json"
 
 app = Flask(__name__)
+MEMORY_INFO_CACHE = None
 
 
 def load_agent_config():
@@ -69,6 +70,84 @@ def get_load():
         return None
 
 
+def get_cpu_model():
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.lower().startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return None
+
+
+def get_memory_info():
+    global MEMORY_INFO_CACHE
+
+    if MEMORY_INFO_CACHE:
+        return MEMORY_INFO_CACHE
+
+    info = {
+        "ram_total": round(psutil.virtual_memory().total / (1024 ** 3), 1),
+        "ram_type": None,
+        "ram_speed": None,
+        "ram_configured_speed": None,
+        "ram_slots": []
+    }
+
+    try:
+        out = subprocess.check_output(["dmidecode", "-t", "memory"], text=True, stderr=subprocess.DEVNULL)
+    except Exception:
+        MEMORY_INFO_CACHE = info
+        return info
+
+    current = {}
+
+    for raw_line in out.splitlines():
+        line = raw_line.strip()
+
+        if line.startswith("Memory Device"):
+            if current.get("size") and current["size"] != "No Module Installed":
+                info["ram_slots"].append(current)
+            current = {}
+            continue
+
+        if ":" not in line:
+            continue
+
+        key, value = [part.strip() for part in line.split(":", 1)]
+
+        if key == "Size":
+            current["size"] = value
+        elif key == "Type" and value != "Unknown":
+            current["type"] = value
+        elif key == "Speed" and value != "Unknown":
+            current["speed"] = value
+        elif key == "Configured Memory Speed" and value != "Unknown":
+            current["configured_speed"] = value
+        elif key == "Locator":
+            current["locator"] = value
+        elif key == "Bank Locator":
+            current["bank"] = value
+
+    if current.get("size") and current["size"] != "No Module Installed":
+        info["ram_slots"].append(current)
+
+    speeds = [slot.get("speed") for slot in info["ram_slots"] if slot.get("speed")]
+    configured = [slot.get("configured_speed") for slot in info["ram_slots"] if slot.get("configured_speed")]
+    types = [slot.get("type") for slot in info["ram_slots"] if slot.get("type")]
+
+    if types:
+        info["ram_type"] = types[0]
+    if speeds:
+        info["ram_speed"] = max(speeds, key=lambda value: int("".join(ch for ch in value if ch.isdigit()) or 0))
+    if configured:
+        info["ram_configured_speed"] = max(configured, key=lambda value: int("".join(ch for ch in value if ch.isdigit()) or 0))
+
+    MEMORY_INFO_CACHE = info
+    return info
+
+
 def run_cmd(cmd):
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
@@ -113,6 +192,7 @@ def get_ping(pool):
 
 def build_payload(agent_cfg, xmrig):
     ip = get_ip()
+    memory = get_memory_info()
 
     try:
         xmrig_cfg = load_xmrig_config()
@@ -133,7 +213,15 @@ def build_payload(agent_cfg, xmrig):
         "uptime": xmrig.get("uptime"),
         "ip": ip,
         "control_url": f"http://{ip}:5010" if ip else None,
+        "cpu_model": get_cpu_model(),
+        "cpu_cores": psutil.cpu_count(logical=False),
+        "cpu_threads": psutil.cpu_count(logical=True),
         "cpu": psutil.cpu_percent(interval=1),
+        "ram_total": memory.get("ram_total"),
+        "ram_type": memory.get("ram_type"),
+        "ram_speed": memory.get("ram_speed"),
+        "ram_configured_speed": memory.get("ram_configured_speed"),
+        "ram_slots": memory.get("ram_slots"),
         "ram": psutil.virtual_memory().percent,
         "disk": psutil.disk_usage("/").percent,
         "temp": get_temp(),
