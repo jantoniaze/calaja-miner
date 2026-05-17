@@ -23,16 +23,25 @@ Execute como `root` ou via `sudo` em uma rig Ubuntu/Debian:
 curl -fsSL https://raw.githubusercontent.com/jantoniaze/calaja-miner/main/scripts/install-calaja-miner.sh | sudo bash
 ```
 
-Se o repositorio estiver privado, use um token do GitHub com permissao de leitura:
+Para reinstalar em uma rig que ja possui `calaja-agent`, `xmrig` ou `/opt/calajaminer`, use instalacao limpa:
 
 ```bash
-export GITHUB_TOKEN="seu_token"
-
-curl -H "Authorization: Bearer $GITHUB_TOKEN" \
-  -fsSL https://raw.githubusercontent.com/jantoniaze/calaja-miner/main/scripts/install-calaja-miner.sh \
+curl -fsSL https://raw.githubusercontent.com/jantoniaze/calaja-miner/main/scripts/install-calaja-miner.sh \
   -o /tmp/install-calaja-miner.sh
 
-sudo env GITHUB_TOKEN="$GITHUB_TOKEN" bash /tmp/install-calaja-miner.sh
+sudo env FRESH_INSTALL=true bash /tmp/install-calaja-miner.sh
+```
+
+Por padrao, a instalacao limpa cria backup de `/opt/calajaminer` antes de remover a versao antiga:
+
+```text
+/opt/calajaminer.backup.YYYYMMDDHHMMSS
+```
+
+Para reinstalar sem backup:
+
+```bash
+sudo env FRESH_INSTALL=true BACKUP_OLD=false bash /tmp/install-calaja-miner.sh
 ```
 
 Variaveis principais:
@@ -63,6 +72,10 @@ O instalador:
 
 - instala dependencias do sistema;
 - baixa este repositorio;
+- detecta instalacoes antigas e servicos rodando;
+- para `calaja-agent` e `xmrig` antes de reinstalar;
+- remove unit files antigos;
+- cria backup opcional de `/opt/calajaminer`;
 - instala arquivos em `/opt/calajaminer`;
 - cria o venv do agent;
 - instala dependencias Python;

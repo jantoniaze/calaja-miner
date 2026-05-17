@@ -17,6 +17,8 @@ THREADS="${THREADS:-}"
 DONATE_LEVEL="${DONATE_LEVEL:-1}"
 CPU_PRIORITY="${CPU_PRIORITY:-5}"
 HUGE_PAGES="${HUGE_PAGES:-true}"
+FRESH_INSTALL="${FRESH_INSTALL:-}"
+BACKUP_OLD="${BACKUP_OLD:-true}"
 
 log() {
     printf '[calaja-install] %s\n' "$*"
@@ -25,6 +27,74 @@ log() {
 require_root() {
     if [ "$(id -u)" -ne 0 ]; then
         echo "Execute como root: sudo bash $0" >&2
+        exit 1
+    fi
+}
+
+is_interactive() {
+    [ -t 0 ] && [ -z "${CI:-}" ]
+}
+
+service_exists() {
+    systemctl list-unit-files "$1" >/dev/null 2>&1 || systemctl status "$1" >/dev/null 2>&1
+}
+
+service_active() {
+    systemctl is-active --quiet "$1" >/dev/null 2>&1
+}
+
+confirm_fresh_install() {
+    local has_existing="false"
+
+    if [ -d "$INSTALL_DIR" ] || service_exists xmrig.service || service_exists calaja-agent.service || service_active xmrig || service_active calaja-agent; then
+        has_existing="true"
+    fi
+
+    if [ "$has_existing" != "true" ]; then
+        FRESH_INSTALL="true"
+        return
+    fi
+
+    log "Instalacao existente detectada."
+    [ -d "$INSTALL_DIR" ] && log "Diretorio existente: $INSTALL_DIR"
+    service_exists xmrig.service && log "Service encontrado: xmrig.service"
+    service_exists calaja-agent.service && log "Service encontrado: calaja-agent.service"
+    service_active xmrig && log "Service ativo: xmrig"
+    service_active calaja-agent && log "Service ativo: calaja-agent"
+
+    case "${FRESH_INSTALL,,}" in
+        true|yes|y|1)
+            log "FRESH_INSTALL=true definido. Instalacao limpa autorizada."
+            return
+            ;;
+        false|no|n|0)
+            echo "Instalacao cancelada: FRESH_INSTALL=false e ja existe instalacao anterior." >&2
+            exit 1
+            ;;
+    esac
+
+    if is_interactive; then
+        printf 'Deseja parar servicos e remover a instalacao antiga para instalar uma versao limpa? [y/N] '
+        read -r answer
+
+        case "${answer,,}" in
+            y|yes|s|sim)
+                FRESH_INSTALL="true"
+                ;;
+            *)
+                echo "Instalacao cancelada pelo usuario."
+                exit 1
+                ;;
+        esac
+    else
+        cat >&2 <<EOF
+Instalacao existente detectada e o terminal nao e interativo.
+Execute novamente com:
+
+  sudo env FRESH_INSTALL=true bash /tmp/install-calaja-miner.sh
+
+Opcionalmente use BACKUP_OLD=false para nao criar backup de /opt/calajaminer.
+EOF
         exit 1
     fi
 }
@@ -83,10 +153,15 @@ install_files() {
     log "Instalando arquivos em $INSTALL_DIR..."
 
     if [ -d "$INSTALL_DIR" ]; then
-        local backup
-        backup="${INSTALL_DIR}.backup.$(date +%Y%m%d%H%M%S)"
-        log "Backup do diretorio existente: $backup"
-        cp -a "$INSTALL_DIR" "$backup"
+        if [ "${BACKUP_OLD,,}" != "false" ]; then
+            local backup
+            backup="${INSTALL_DIR}.backup.$(date +%Y%m%d%H%M%S)"
+            log "Backup do diretorio existente: $backup"
+            cp -a "$INSTALL_DIR" "$backup"
+        fi
+
+        log "Removendo arquivos antigos de $INSTALL_DIR..."
+        rm -rf "$INSTALL_DIR"
     fi
 
     mkdir -p "$INSTALL_DIR"
@@ -101,6 +176,28 @@ install_files() {
 
     chmod +x "$INSTALL_DIR/scripts/"*.sh || true
     chmod +x "$INSTALL_DIR/xmrig/build/xmrig" || true
+}
+
+stop_old_services() {
+    log "Parando services antigos, se existirem..."
+
+    systemctl stop calaja-agent 2>/dev/null || true
+    systemctl stop xmrig 2>/dev/null || true
+}
+
+remove_old_services() {
+    log "Removendo unit files antigos, se existirem..."
+
+    systemctl disable calaja-agent 2>/dev/null || true
+    systemctl disable xmrig 2>/dev/null || true
+    systemctl disable calaja-firstboot 2>/dev/null || true
+
+    rm -f /etc/systemd/system/calaja-agent.service
+    rm -f /etc/systemd/system/xmrig.service
+    rm -f /etc/systemd/system/calaja-firstboot.service
+
+    systemctl daemon-reload || true
+    systemctl reset-failed || true
 }
 
 setup_agent_venv() {
@@ -270,8 +367,11 @@ EOF
 
 main() {
     require_root
+    confirm_fresh_install
     install_packages
     fetch_repo
+    stop_old_services
+    remove_old_services
     install_files
     setup_agent_venv
     write_configs
