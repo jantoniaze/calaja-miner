@@ -421,6 +421,24 @@ def miner_restart():
     return jsonify({"ok": True})
 
 
+@app.route("/api/local/system/reboot", methods=["POST"])
+def system_reboot():
+    subprocess.Popen(["systemctl", "reboot"])
+    return jsonify({"ok": True, "action": "reboot"})
+
+
+@app.route("/api/local/system/reboot-delayed", methods=["POST"])
+def system_reboot_delayed():
+    subprocess.Popen(["sh", "-c", "sleep 30 && systemctl reboot"])
+    return jsonify({"ok": True, "action": "reboot-delayed", "delay_seconds": 30})
+
+
+@app.route("/api/local/system/shutdown", methods=["POST"])
+def system_shutdown():
+    subprocess.Popen(["systemctl", "poweroff"])
+    return jsonify({"ok": True, "action": "shutdown"})
+
+
 if __name__ == "__main__":
     threading.Thread(target=send_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=5010)
