@@ -63,6 +63,145 @@ def get_temp():
     return None
 
 
+def read_number(path):
+    try:
+        with open(path) as f:
+            return float(f.read().strip())
+    except Exception:
+        return None
+
+
+def get_cpu_frequency():
+    freqs = []
+
+    for cpu in range(psutil.cpu_count(logical=True) or 0):
+        value = read_number(f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_cur_freq")
+        if value:
+            freqs.append(value / 1000)
+
+    max_freq = read_number("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
+
+    if freqs:
+        return {
+            "current_mhz": round(sum(freqs) / len(freqs), 0),
+            "max_mhz": round(max_freq / 1000, 0) if max_freq else None
+        }
+
+    try:
+        freq = psutil.cpu_freq()
+        if freq:
+            return {
+                "current_mhz": round(freq.current, 0),
+                "max_mhz": round(freq.max, 0) if freq.max else None
+            }
+    except Exception:
+        pass
+
+    return {"current_mhz": None, "max_mhz": None}
+
+
+def get_hwmon_dirs():
+    base = "/sys/class/hwmon"
+
+    try:
+        names = sorted(os.listdir(base))
+    except Exception:
+        return []
+
+    return [os.path.join(base, name) for name in names if name.startswith("hwmon")]
+
+
+def get_cpu_voltage():
+    labels = {}
+
+    for hwmon in get_hwmon_dirs():
+        for name in os.listdir(hwmon):
+            if name.startswith("in") and name.endswith("_label"):
+                try:
+                    index = name[2:].split("_", 1)[0]
+                    with open(os.path.join(hwmon, name)) as f:
+                        labels[index] = f.read().strip().lower()
+                except Exception:
+                    pass
+
+        for index, label in labels.items():
+            if any(token in label for token in ("vcore", "cpu", "svi2_core", "core")):
+                value = read_number(os.path.join(hwmon, f"in{index}_input"))
+                if value is not None:
+                    return round(value / 1000, 3)
+
+    return None
+
+
+def get_fan_info():
+    fans = []
+    controls = []
+
+    for hwmon in get_hwmon_dirs():
+        try:
+            with open(os.path.join(hwmon, "name")) as f:
+                chip = f.read().strip()
+        except Exception:
+            chip = os.path.basename(hwmon)
+
+        for name in os.listdir(hwmon):
+            if name.startswith("fan") and name.endswith("_input"):
+                index = name[3:].split("_", 1)[0]
+                rpm = read_number(os.path.join(hwmon, name))
+                if rpm is not None:
+                    fans.append({
+                        "chip": chip,
+                        "index": index,
+                        "rpm": int(rpm)
+                    })
+
+            if name.startswith("pwm") and name[3:].isdigit():
+                path = os.path.join(hwmon, name)
+                if os.path.exists(path):
+                    controls.append({
+                        "chip": chip,
+                        "index": name[3:],
+                        "path": path,
+                        "enable_path": os.path.join(hwmon, f"{name}_enable")
+                    })
+
+    return {
+        "rpm": fans[0]["rpm"] if fans else None,
+        "fans": fans,
+        "control_available": bool(controls),
+        "controls": controls
+    }
+
+
+def set_fan_speed(percent=None, auto=False):
+    fan = get_fan_info()
+
+    if not fan["controls"]:
+        return False, "Controle PWM indisponivel nesta rig"
+
+    control = fan["controls"][0]
+
+    try:
+        if auto:
+            with open(control["enable_path"], "w") as f:
+                f.write("2\n")
+            return True, "Controle automatico da fan ativado"
+
+        percent = max(20, min(100, int(percent)))
+        pwm_value = round(percent * 255 / 100)
+
+        if os.path.exists(control["enable_path"]):
+            with open(control["enable_path"], "w") as f:
+                f.write("1\n")
+
+        with open(control["path"], "w") as f:
+            f.write(f"{pwm_value}\n")
+
+        return True, f"Fan ajustada para {percent}%"
+    except Exception as exc:
+        return False, str(exc)
+
+
 def get_load():
     try:
         l1, l5, l15 = os.getloadavg()
@@ -291,6 +430,8 @@ def build_payload(agent_cfg, xmrig, backends=None):
     memory = get_memory_info()
     board = get_board_info()
     temp = get_temp()
+    cpu_frequency = get_cpu_frequency()
+    fan = get_fan_info()
 
     try:
         xmrig_cfg = load_xmrig_config()
@@ -314,6 +455,9 @@ def build_payload(agent_cfg, xmrig, backends=None):
         "cpu_model": get_cpu_model(),
         "cpu_cores": psutil.cpu_count(logical=False),
         "cpu_threads": psutil.cpu_count(logical=True),
+        "cpu_frequency_mhz": cpu_frequency.get("current_mhz"),
+        "cpu_frequency_max_mhz": cpu_frequency.get("max_mhz"),
+        "cpu_voltage": get_cpu_voltage(),
         "board_manufacturer": board.get("board_manufacturer"),
         "board_product": board.get("board_product"),
         "board_version": board.get("board_version"),
@@ -327,6 +471,8 @@ def build_payload(agent_cfg, xmrig, backends=None):
         "ram": psutil.virtual_memory().percent,
         "disk": psutil.disk_usage("/").percent,
         "temp": temp,
+        "cpu_fan_rpm": fan.get("rpm"),
+        "fan_control_available": fan.get("control_available"),
         "threads": threads,
         "miner_threads": build_miner_threads(backends or [], temp),
         "load": get_load(),
@@ -492,6 +638,17 @@ def system_reboot_delayed():
 def system_shutdown():
     subprocess.Popen(["systemctl", "poweroff"])
     return jsonify({"ok": True, "action": "shutdown"})
+
+
+@app.route("/api/local/fan", methods=["POST"])
+def fan_control():
+    data = request.json or {}
+    ok, message = set_fan_speed(
+        percent=data.get("percent"),
+        auto=str(data.get("mode", "")).lower() == "auto"
+    )
+    status = 200 if ok else 400
+    return jsonify({"ok": ok, "message": message}), status
 
 
 if __name__ == "__main__":
