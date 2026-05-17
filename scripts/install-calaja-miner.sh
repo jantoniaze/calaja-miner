@@ -6,6 +6,18 @@ BRANCH="${BRANCH:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/calajaminer}"
 TMP_DIR="${TMP_DIR:-/tmp/calaja-miner-install}"
 
+USER_CENTRAL_URL="${CENTRAL_URL:-}"
+USER_POOL_URL="${POOL_URL:-}"
+USER_POOL_USER="${POOL_USER:-}"
+USER_POOL_PASS="${POOL_PASS:-}"
+USER_LOCATION="${LOCATION:-}"
+USER_XMRIG_TOKEN="${XMRIG_TOKEN:-}"
+USER_AGENT_INTERVAL="${AGENT_INTERVAL:-}"
+USER_THREADS="${THREADS:-}"
+USER_DONATE_LEVEL="${DONATE_LEVEL:-}"
+USER_CPU_PRIORITY="${CPU_PRIORITY:-}"
+USER_HUGE_PAGES="${HUGE_PAGES:-}"
+
 CENTRAL_URL="${CENTRAL_URL:-http://192.168.3.3:5001/api/status}"
 POOL_URL="${POOL_URL:-192.168.3.3:3333}"
 POOL_USER="${POOL_USER:-ZEPHYR2G2eYc89an5bmrZFBXre8VsAEPk3ak2ZB1kRDrcQ7stCQVAYpeEG52JS5F9XgyQ4eFah5C8b3gFY7WzL3tfSdSfhfnWbR3i}"
@@ -19,6 +31,23 @@ CPU_PRIORITY="${CPU_PRIORITY:-5}"
 HUGE_PAGES="${HUGE_PAGES:-true}"
 FRESH_INSTALL="${FRESH_INSTALL:-}"
 BACKUP_OLD="${BACKUP_OLD:-true}"
+INSTALL_MODE="${INSTALL_MODE:-auto}"
+PRESERVE_CONFIG="${PRESERVE_CONFIG:-true}"
+FORCE_XMRIG_BUILD="${FORCE_XMRIG_BUILD:-false}"
+
+EXISTING_RIG_ID=""
+EXISTING_WORKER=""
+EXISTING_LOCATION=""
+EXISTING_CENTRAL_URL=""
+EXISTING_XMRIG_TOKEN=""
+EXISTING_AGENT_INTERVAL=""
+EXISTING_POOL_URL=""
+EXISTING_POOL_USER=""
+EXISTING_POOL_PASS=""
+EXISTING_THREADS=""
+EXISTING_DONATE_LEVEL=""
+EXISTING_CPU_PRIORITY=""
+EXISTING_HUGE_PAGES=""
 
 log() {
     printf '[calaja-install] %s\n' "$*"
@@ -43,15 +72,23 @@ service_active() {
     systemctl is-active --quiet "$1" >/dev/null 2>&1
 }
 
-confirm_fresh_install() {
+detect_existing_install() {
     local has_existing="false"
 
     if [ -d "$INSTALL_DIR" ] || service_exists xmrig.service || service_exists calaja-agent.service || service_active xmrig || service_active calaja-agent; then
         has_existing="true"
     fi
 
+    echo "$has_existing"
+}
+
+decide_install_mode() {
+    local has_existing
+    has_existing="$(detect_existing_install)"
+
     if [ "$has_existing" != "true" ]; then
-        FRESH_INSTALL="true"
+        INSTALL_MODE="clean"
+        log "Nenhuma instalacao anterior detectada. Modo: clean."
         return
     fi
 
@@ -64,7 +101,8 @@ confirm_fresh_install() {
 
     case "${FRESH_INSTALL,,}" in
         true|yes|y|1)
-            log "FRESH_INSTALL=true definido. Instalacao limpa autorizada."
+            INSTALL_MODE="clean"
+            log "FRESH_INSTALL=true definido. Modo: clean."
             return
             ;;
         false|no|n|0)
@@ -73,13 +111,38 @@ confirm_fresh_install() {
             ;;
     esac
 
+    case "${INSTALL_MODE,,}" in
+        auto|"")
+            INSTALL_MODE="update"
+            log "Modo automatico: update."
+            return
+            ;;
+        update|upgrade)
+            INSTALL_MODE="update"
+            log "Modo: update."
+            return
+            ;;
+        clean|fresh|reinstall)
+            INSTALL_MODE="clean"
+            log "Modo: clean."
+            return
+            ;;
+        cancel|false|no|n|0)
+            echo "Instalacao cancelada: INSTALL_MODE=cancel." >&2
+            exit 1
+            ;;
+    esac
+
     if is_interactive; then
-        printf 'Deseja parar servicos e remover a instalacao antiga para instalar uma versao limpa? [y/N] '
+        printf 'Escolha o modo: atualizar preservando configuracao [U], instalacao limpa [c], cancelar [q]: '
         read -r answer
 
         case "${answer,,}" in
-            y|yes|s|sim)
-                FRESH_INSTALL="true"
+            ""|u|update|atualizar)
+                INSTALL_MODE="update"
+                ;;
+            c|clean|fresh|limpa|s|sim)
+                INSTALL_MODE="clean"
                 ;;
             *)
                 echo "Instalacao cancelada pelo usuario."
@@ -88,12 +151,15 @@ confirm_fresh_install() {
         esac
     else
         cat >&2 <<EOF
-Instalacao existente detectada e o terminal nao e interativo.
-Execute novamente com:
+INSTALL_MODE invalido: $INSTALL_MODE
+Use uma destas opcoes:
+
+  sudo env INSTALL_MODE=update bash /tmp/install-calaja-miner.sh
+  sudo env INSTALL_MODE=clean bash /tmp/install-calaja-miner.sh
+
+Compatibilidade antiga:
 
   sudo env FRESH_INSTALL=true bash /tmp/install-calaja-miner.sh
-
-Opcionalmente use BACKUP_OLD=false para nao criar backup de /opt/calajaminer.
 EOF
         exit 1
     fi
@@ -155,6 +221,71 @@ fetch_repo() {
     fi
 }
 
+read_existing_config() {
+    if [ "${PRESERVE_CONFIG,,}" == "false" ] || [ ! -d "$INSTALL_DIR" ]; then
+        return
+    fi
+
+    log "Lendo configuracao atual para preservar rig/worker/pool..."
+
+    while IFS='=' read -r key value; do
+        case "$key" in
+            rig_id) EXISTING_RIG_ID="$value" ;;
+            worker) EXISTING_WORKER="$value" ;;
+            location) EXISTING_LOCATION="$value" ;;
+            central_url) EXISTING_CENTRAL_URL="$value" ;;
+            xmrig_token) EXISTING_XMRIG_TOKEN="$value" ;;
+            interval) EXISTING_AGENT_INTERVAL="$value" ;;
+            pool_url) EXISTING_POOL_URL="$value" ;;
+            pool_user) EXISTING_POOL_USER="$value" ;;
+            pool_pass) EXISTING_POOL_PASS="$value" ;;
+            threads) EXISTING_THREADS="$value" ;;
+            donate_level) EXISTING_DONATE_LEVEL="$value" ;;
+            cpu_priority) EXISTING_CPU_PRIORITY="$value" ;;
+            huge_pages) EXISTING_HUGE_PAGES="$value" ;;
+        esac
+    done < <(python3 - "$INSTALL_DIR" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+
+def load(path):
+    try:
+        with path.open() as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+agent = load(root / "agent" / "config.json")
+xmrig = load(root / "config.json")
+pool = (xmrig.get("pools") or [{}])[0] if isinstance(xmrig.get("pools"), list) else {}
+cpu = xmrig.get("cpu") or {}
+
+values = {
+    "rig_id": agent.get("rig_id"),
+    "worker": agent.get("worker"),
+    "location": agent.get("location"),
+    "central_url": agent.get("central_url"),
+    "xmrig_token": agent.get("xmrig_token"),
+    "interval": agent.get("interval"),
+    "pool_url": pool.get("url"),
+    "pool_user": pool.get("user"),
+    "pool_pass": pool.get("pass"),
+    "threads": len(cpu.get("rx") or []) if isinstance(cpu.get("rx"), list) else None,
+    "donate_level": xmrig.get("donate-level"),
+    "cpu_priority": cpu.get("priority"),
+    "huge_pages": cpu.get("huge-pages"),
+}
+
+for key, value in values.items():
+    if value is not None and value != "":
+        print(f"{key}={value}")
+PY
+)
+}
+
 install_files() {
     log "Instalando arquivos em $INSTALL_DIR..."
 
@@ -166,14 +297,19 @@ install_files() {
             cp -a "$INSTALL_DIR" "$backup"
         fi
 
-        log "Removendo arquivos antigos de $INSTALL_DIR..."
-        rm -rf "$INSTALL_DIR"
+        if [ "${INSTALL_MODE,,}" == "clean" ]; then
+            log "Removendo arquivos antigos de $INSTALL_DIR..."
+            rm -rf "$INSTALL_DIR"
+        else
+            log "Atualizando arquivos existentes em $INSTALL_DIR..."
+        fi
     fi
 
     mkdir -p "$INSTALL_DIR"
 
     rsync -a --delete \
         --exclude 'agent/venv/' \
+        --exclude 'xmrig/build/' \
         --exclude 'logs/' \
         --exclude '.firstboot_done' \
         "$TMP_DIR/opt/calajaminer/" "$INSTALL_DIR/"
@@ -220,6 +356,11 @@ build_xmrig_if_needed() {
     source_dir="$INSTALL_DIR/xmrig"
     build_dir="$source_dir/build"
 
+    if [ "${FORCE_XMRIG_BUILD,,}" == "true" ] && [ -d "$build_dir" ]; then
+        log "FORCE_XMRIG_BUILD=true. Removendo build antigo do XMRig..."
+        rm -rf "$build_dir"
+    fi
+
     if [ -x "$xmrig_bin" ]; then
         log "XMRig ja existe: $xmrig_bin"
         return
@@ -246,18 +387,27 @@ build_xmrig_if_needed() {
 }
 
 write_configs() {
-    local suffix rig_id worker pool_pass threads
+    local suffix rig_id worker location central_url xmrig_token agent_interval pool_url pool_user pool_pass threads donate_level cpu_priority huge_pages
     suffix="$(detect_suffix)"
-    rig_id="${RIG_ID:-calaja-rig-$suffix}"
-    worker="${WORKER:-rig$suffix}"
-    pool_pass="${POOL_PASS:-$worker}"
-    threads="${THREADS:-$(nproc)}"
+    rig_id="${RIG_ID:-${EXISTING_RIG_ID:-calaja-rig-$suffix}}"
+    worker="${WORKER:-${EXISTING_WORKER:-rig$suffix}}"
+    location="${USER_LOCATION:-${EXISTING_LOCATION:-$LOCATION}}"
+    central_url="${USER_CENTRAL_URL:-${EXISTING_CENTRAL_URL:-$CENTRAL_URL}}"
+    xmrig_token="${USER_XMRIG_TOKEN:-${EXISTING_XMRIG_TOKEN:-$XMRIG_TOKEN}}"
+    agent_interval="${USER_AGENT_INTERVAL:-${EXISTING_AGENT_INTERVAL:-$AGENT_INTERVAL}}"
+    pool_url="${USER_POOL_URL:-${EXISTING_POOL_URL:-$POOL_URL}}"
+    pool_user="${USER_POOL_USER:-${EXISTING_POOL_USER:-$POOL_USER}}"
+    pool_pass="${USER_POOL_PASS:-${EXISTING_POOL_PASS:-$worker}}"
+    threads="${USER_THREADS:-${EXISTING_THREADS:-$(nproc)}}"
+    donate_level="${USER_DONATE_LEVEL:-${EXISTING_DONATE_LEVEL:-$DONATE_LEVEL}}"
+    cpu_priority="${USER_CPU_PRIORITY:-${EXISTING_CPU_PRIORITY:-$CPU_PRIORITY}}"
+    huge_pages="${USER_HUGE_PAGES:-${EXISTING_HUGE_PAGES:-$HUGE_PAGES}}"
 
-    log "Configurando rig_id=$rig_id worker=$worker location=$LOCATION"
-    log "Central: $CENTRAL_URL"
-    log "Pool: $POOL_URL"
+    log "Configurando rig_id=$rig_id worker=$worker location=$location"
+    log "Central: $central_url"
+    log "Pool: $pool_url"
 
-    python3 - "$INSTALL_DIR" "$rig_id" "$worker" "$LOCATION" "$CENTRAL_URL" "$XMRIG_TOKEN" "$AGENT_INTERVAL" "$POOL_URL" "$POOL_USER" "$pool_pass" "$threads" "$DONATE_LEVEL" "$CPU_PRIORITY" "$HUGE_PAGES" <<'PY'
+    python3 - "$INSTALL_DIR" "$rig_id" "$worker" "$location" "$central_url" "$xmrig_token" "$agent_interval" "$pool_url" "$pool_user" "$pool_pass" "$threads" "$donate_level" "$cpu_priority" "$huge_pages" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -376,13 +526,40 @@ start_services() {
     systemctl restart xmrig
     systemctl restart calaja-agent
 
+    sleep 2
+
+    if ! systemctl is-active --quiet xmrig; then
+        echo "ERRO: xmrig.service nao iniciou corretamente." >&2
+        systemctl --no-pager --full status xmrig --lines 20 >&2 || true
+        journalctl -u xmrig --no-pager -n 30 >&2 || true
+        exit 1
+    fi
+
+    if ! systemctl is-active --quiet calaja-agent; then
+        echo "ERRO: calaja-agent.service nao iniciou corretamente." >&2
+        systemctl --no-pager --full status calaja-agent --lines 20 >&2 || true
+        journalctl -u calaja-agent --no-pager -n 30 >&2 || true
+        exit 1
+    fi
+
     systemctl --no-pager --full status xmrig --lines 3 || true
     systemctl --no-pager --full status calaja-agent --lines 3 || true
 }
 
 print_summary() {
-    local ip
+    local ip final_central
     ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    final_central="$(python3 - "$INSTALL_DIR/agent/config.json" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1]) as f:
+        print(json.load(f).get("central_url", ""))
+except Exception:
+    print("")
+PY
+)"
 
     cat <<EOF
 
@@ -391,7 +568,7 @@ Instalacao concluida.
 Rig IP: ${ip:-unknown}
 Agent local: http://${ip:-RIG_IP}:5010/health
 XMRig API: http://${ip:-RIG_IP}:16000/2/summary
-Central: $CENTRAL_URL
+Central: ${final_central:-$CENTRAL_URL}
 
 Comandos uteis:
   systemctl status calaja-agent
@@ -404,11 +581,14 @@ EOF
 
 main() {
     require_root
-    confirm_fresh_install
+    decide_install_mode
     install_packages
     fetch_repo
+    read_existing_config
     stop_old_services
-    remove_old_services
+    if [ "${INSTALL_MODE,,}" == "clean" ]; then
+        remove_old_services
+    fi
     install_files
     setup_agent_venv
     build_xmrig_if_needed
