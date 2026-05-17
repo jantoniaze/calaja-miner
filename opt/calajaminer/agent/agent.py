@@ -13,6 +13,7 @@ XMRIG_CONFIG = "/opt/calajaminer/config.json"
 
 app = Flask(__name__)
 MEMORY_INFO_CACHE = None
+BOARD_INFO_CACHE = None
 
 
 def load_agent_config():
@@ -148,6 +149,50 @@ def get_memory_info():
     return info
 
 
+def get_board_info():
+    global BOARD_INFO_CACHE
+
+    if BOARD_INFO_CACHE:
+        return BOARD_INFO_CACHE
+
+    info = {
+        "board_manufacturer": None,
+        "board_product": None,
+        "board_version": None,
+        "board_model": None
+    }
+
+    try:
+        out = subprocess.check_output(["dmidecode", "-t", "baseboard"], text=True, stderr=subprocess.DEVNULL)
+    except Exception:
+        BOARD_INFO_CACHE = info
+        return info
+
+    for raw_line in out.splitlines():
+        line = raw_line.strip()
+
+        if ":" not in line:
+            continue
+
+        key, value = [part.strip() for part in line.split(":", 1)]
+
+        if not value or value.lower() in {"unknown", "default string", "not specified"}:
+            continue
+
+        if key == "Manufacturer":
+            info["board_manufacturer"] = value
+        elif key == "Product Name":
+            info["board_product"] = value
+        elif key == "Version":
+            info["board_version"] = value
+
+    parts = [info["board_manufacturer"], info["board_product"]]
+    info["board_model"] = " ".join(part for part in parts if part) or info["board_product"]
+
+    BOARD_INFO_CACHE = info
+    return info
+
+
 def run_cmd(cmd):
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
@@ -193,6 +238,7 @@ def get_ping(pool):
 def build_payload(agent_cfg, xmrig):
     ip = get_ip()
     memory = get_memory_info()
+    board = get_board_info()
 
     try:
         xmrig_cfg = load_xmrig_config()
@@ -216,6 +262,10 @@ def build_payload(agent_cfg, xmrig):
         "cpu_model": get_cpu_model(),
         "cpu_cores": psutil.cpu_count(logical=False),
         "cpu_threads": psutil.cpu_count(logical=True),
+        "board_manufacturer": board.get("board_manufacturer"),
+        "board_product": board.get("board_product"),
+        "board_version": board.get("board_version"),
+        "board_model": board.get("board_model"),
         "cpu": psutil.cpu_percent(interval=1),
         "ram_total": memory.get("ram_total"),
         "ram_type": memory.get("ram_type"),
