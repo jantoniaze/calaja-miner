@@ -112,9 +112,14 @@ def get_hwmon_dirs():
 
 
 def get_cpu_voltage():
-    labels = {}
-
     for hwmon in get_hwmon_dirs():
+        chip = get_hwmon_name(hwmon).lower()
+
+        if is_gpu_hwmon(chip):
+            continue
+
+        labels = {}
+
         for name in os.listdir(hwmon):
             if name.startswith("in") and name.endswith("_label"):
                 try:
@@ -133,16 +138,33 @@ def get_cpu_voltage():
     return None
 
 
+def get_hwmon_name(hwmon):
+    try:
+        with open(os.path.join(hwmon, "name")) as f:
+            return f.read().strip()
+    except Exception:
+        return os.path.basename(hwmon)
+
+
+def is_gpu_hwmon(chip):
+    return chip.lower() in {"nouveau", "amdgpu", "radeon"} or "nvidia" in chip.lower()
+
+
+def is_board_hwmon(chip):
+    chip = chip.lower()
+    board_tokens = ("it", "nct", "w836", "aspeed", "asus", "gigabyte", "superio")
+    return any(token in chip for token in board_tokens)
+
+
 def get_fan_info():
     fans = []
     controls = []
 
     for hwmon in get_hwmon_dirs():
-        try:
-            with open(os.path.join(hwmon, "name")) as f:
-                chip = f.read().strip()
-        except Exception:
-            chip = os.path.basename(hwmon)
+        chip = get_hwmon_name(hwmon)
+
+        if is_gpu_hwmon(chip) or not is_board_hwmon(chip):
+            continue
 
         for name in os.listdir(hwmon):
             if name.startswith("fan") and name.endswith("_input"):
@@ -170,6 +192,45 @@ def get_fan_info():
         "fans": fans,
         "control_available": bool(controls),
         "controls": controls
+    }
+
+
+def get_gpu_info():
+    devices = []
+
+    for hwmon in get_hwmon_dirs():
+        chip = get_hwmon_name(hwmon)
+
+        if not is_gpu_hwmon(chip):
+            continue
+
+        device = {
+            "chip": chip,
+            "fan_rpm": None,
+            "temp": None,
+            "voltage": None
+        }
+
+        for name in os.listdir(hwmon):
+            if name.startswith("fan") and name.endswith("_input") and device["fan_rpm"] is None:
+                rpm = read_number(os.path.join(hwmon, name))
+                device["fan_rpm"] = int(rpm) if rpm is not None else None
+            elif name.startswith("temp") and name.endswith("_input") and device["temp"] is None:
+                temp = read_number(os.path.join(hwmon, name))
+                device["temp"] = round(temp / 1000, 1) if temp is not None else None
+            elif name.startswith("in") and name.endswith("_input") and device["voltage"] is None:
+                voltage = read_number(os.path.join(hwmon, name))
+                device["voltage"] = round(voltage / 1000, 3) if voltage is not None else None
+
+        devices.append(device)
+
+    primary = devices[0] if devices else {}
+
+    return {
+        "devices": devices,
+        "fan_rpm": primary.get("fan_rpm"),
+        "temp": primary.get("temp"),
+        "voltage": primary.get("voltage")
     }
 
 
@@ -432,6 +493,7 @@ def build_payload(agent_cfg, xmrig, backends=None):
     temp = get_temp()
     cpu_frequency = get_cpu_frequency()
     fan = get_fan_info()
+    gpu = get_gpu_info()
 
     try:
         xmrig_cfg = load_xmrig_config()
@@ -473,6 +535,10 @@ def build_payload(agent_cfg, xmrig, backends=None):
         "temp": temp,
         "cpu_fan_rpm": fan.get("rpm"),
         "fan_control_available": fan.get("control_available"),
+        "gpu_fan_rpm": gpu.get("fan_rpm"),
+        "gpu_temp": gpu.get("temp"),
+        "gpu_voltage": gpu.get("voltage"),
+        "gpu_sensors": gpu.get("devices"),
         "threads": threads,
         "miner_threads": build_miner_threads(backends or [], temp),
         "load": get_load(),
